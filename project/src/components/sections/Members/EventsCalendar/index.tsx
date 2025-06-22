@@ -1,0 +1,219 @@
+import React, { useState, useEffect } from 'react';
+import { Calendar, MapPin } from 'lucide-react';
+import { ParchmentBox } from '../../../ui/ParchmentBox';
+import { EventRSVP } from '../../../members/EventRSVP';
+import { memberEvents } from './data';
+import { useAuth } from '../../../auth/AuthProvider';
+import { supabase } from '../../../../lib/supabase';
+
+export function EventsCalendar() {
+  const [activeTab, setActiveTab] = useState<'upcoming' | 'archive'>('upcoming');
+  const [userRSVPs, setUserRSVPs] = useState<Record<string, string>>({});
+  const [isLoading, setIsLoading] = useState(false);
+  const { user, session } = useAuth();
+
+  // Load user's RSVPs from database
+  useEffect(() => {
+    if (user && session) {
+      loadUserRSVPs();
+    }
+  }, [user, session]);
+
+  // Listen for RSVP updates
+  useEffect(() => {
+    const handleRSVPUpdate = (event: CustomEvent) => {
+      const { eventId, status } = event.detail;
+      setUserRSVPs(prev => ({
+        ...prev,
+        [eventId]: status
+      }));
+    };
+
+    window.addEventListener('rsvpUpdate', handleRSVPUpdate as EventListener);
+    return () => window.removeEventListener('rsvpUpdate', handleRSVPUpdate as EventListener);
+  }, []);
+
+  const loadUserRSVPs = async () => {
+    if (!user) return;
+
+    setIsLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('event_rsvps')
+        .select('event_id, status')
+        .eq('user_id', user.id);
+
+      if (error) throw error;
+
+      const rsvpMap = data.reduce((acc, rsvp) => {
+        acc[rsvp.event_id] = rsvp.status;
+        return acc;
+      }, {} as Record<string, string>);
+
+      setUserRSVPs(rsvpMap);
+    } catch (error) {
+      console.error('Error loading user RSVPs:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Sort events into upcoming and archive based on date
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const sortedEvents = memberEvents.reduce(
+    (acc, event) => {
+      const eventDate = (() => {
+        if (event.date.includes('-')) {
+          const [startDate] = event.date.split('-');
+          return new Date(startDate.trim() + ', ' + event.date.split(',')[1]);
+        }
+        if (event.date.includes(',')) {
+          return new Date(event.date);
+        }
+        const [month, year] = event.date.split(' ');
+        if (month && year) {
+          const monthIndex = new Date(`${month} 1`).getMonth();
+          return new Date(parseInt(year), monthIndex + 1, 0);
+        }
+        return new Date(today.getFullYear() + 1, 0, 1);
+      })();
+
+      if (!isNaN(eventDate.getTime()) && eventDate < today) {
+        acc.archive.push(event);
+      } else {
+        acc.upcoming.push(event);
+      }
+      return acc;
+    },
+    { upcoming: [], archive: [] }
+  );
+
+  // Sort upcoming events by date
+  sortedEvents.upcoming.sort((a, b) => {
+    const getDateValue = (dateStr: string) => {
+      if (dateStr.includes('-')) {
+        const [startDate] = dateStr.split('-');
+        return new Date(startDate.trim() + ', ' + dateStr.split(',')[1]).getTime();
+      }
+      if (!dateStr.includes(',')) {
+        const [month, year] = dateStr.split(' ');
+        const monthIndex = new Date(`${month} 1`).getMonth();
+        return new Date(parseInt(year), monthIndex, 1).getTime();
+      }
+      return new Date(dateStr).getTime();
+    };
+
+    const timeA = getDateValue(a.date);
+    const timeB = getDateValue(b.date);
+    return isNaN(timeA) || isNaN(timeB) ? 0 : timeA - timeB;
+  });
+
+  // Sort archive events by date in reverse chronological order
+  sortedEvents.archive.sort((a, b) => {
+    const dateA = new Date(a.date);
+    const dateB = new Date(b.date);
+    return isNaN(dateA.getTime()) || isNaN(dateB.getTime()) 
+      ? 0 
+      : dateB.getTime() - dateA.getTime();
+  });
+
+  const displayEvents = activeTab === 'upcoming' ? sortedEvents.upcoming : sortedEvents.archive;
+
+  return (
+    <section className="py-12">
+      <h2 className="text-3xl font-medieval text-amber-500 mb-8">Member Events</h2>
+      
+      <div className="flex gap-3 md:gap-4 mb-6">
+        <button
+          onClick={() => setActiveTab('upcoming')}
+          className={`px-3 md:px-4 py-2 rounded-full transition-colors text-sm md:text-base ${
+            activeTab === 'upcoming'
+              ? 'bg-amber-500/20 text-amber-500'
+              : 'text-gray-400 hover:text-amber-500 hover:bg-amber-500/10'
+          }`}
+        >
+          Upcoming Events
+        </button>
+        <button
+          onClick={() => setActiveTab('archive')}
+          className={`px-3 md:px-4 py-2 rounded-full transition-colors text-sm md:text-base ${
+            activeTab === 'archive'
+              ? 'bg-amber-500/20 text-amber-500'
+              : 'text-gray-400 hover:text-amber-500 hover:bg-amber-500/10'
+          }`}
+        >
+          Event Archive
+        </button>
+      </div>
+
+      {isLoading && (
+        <div className="text-center py-4">
+          <div className="inline-flex items-center gap-2 text-amber-500">
+            <div className="w-4 h-4 border-2 border-amber-500 border-t-transparent rounded-full animate-spin"></div>
+            Loading your RSVPs...
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-4">
+        {displayEvents.length === 0 ? (
+          <ParchmentBox>
+            <div className="p-4 md:p-6 text-center text-gray-400">
+              No {activeTab === 'upcoming' ? 'upcoming' : 'past'} events to display.
+            </div>
+          </ParchmentBox>
+        ) : (
+          displayEvents.map((event) => (
+            <ParchmentBox key={event.id}>
+              <div className="p-4">
+                <div className="flex flex-col md:flex-row md:items-start gap-4">
+                  <div className="flex-shrink-0 w-full md:w-36 p-2 bg-amber-500/10 rounded-lg text-center">
+                    <Calendar className="w-5 h-5 md:w-6 md:h-6 text-amber-500 mx-auto mb-1" />
+                    <p className="text-amber-500 font-medium text-xs md:text-sm">{event.date}</p>
+                  </div>
+                  <div className="flex-grow min-w-0">
+                    <h3 className="text-base md:text-lg font-medieval text-amber-500 mb-1">{event.title}</h3>
+                    <p className="text-gray-400 text-sm mb-2">{event.description}</p>
+                    <div className="flex items-center text-gray-400 text-xs md:text-sm mb-3">
+                      <MapPin className="w-4 h-4 text-amber-500 mr-2 flex-shrink-0" />
+                      <span className="truncate">{event.location}</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2 items-center">
+                      {event.buttons.filter(button => button.isVisible !== false).map((button, index) => (
+                        <a
+                          key={index}
+                          href={button.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-2 px-4 py-2 bg-amber-500/10 
+                            text-amber-500 rounded-full hover:bg-amber-500/20 transition-colors"
+                        >
+                          {button.label}
+                        </a>
+                      ))}
+                      {activeTab === 'upcoming' && (
+                        <EventRSVP
+                          eventId={event.id}
+                          eventTitle={event.title}
+                          currentStatus={userRSVPs[event.id]}
+                          onUpdate={loadUserRSVPs}
+                        />
+                      )}
+                    </div>
+                  </div>
+                  <div className="hidden md:block flex-shrink-0">
+                    <span className="px-3 py-1 bg-amber-500/10 text-amber-500 rounded-full text-sm">
+                      {event.type}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </ParchmentBox>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
